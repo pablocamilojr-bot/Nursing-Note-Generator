@@ -1,0 +1,531 @@
+echo "# Nursing-Note-Generator" >> README.md
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/pablocamilojr-bot/Nursing-Note-Generator.git
+git push -u origin main
+// Nursing Note Generator — single-file build (merged from modular plan)
+// Validated, accessible, persistent (localStorage), copy/print/export, ventilator settings
+
+import { useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+
+/* ============================================================================
+   1) Static options (was src/lib/options.ts)
+============================================================================ */
+const commonDiagnoses = [
+  "acute kidney injury","alcohol withdrawal","anemia","asthma exacerbation",
+  "atrial fibrillation","bipolar disorder","cholecystitis","CHF","constipation",
+  "COPD","COVID-19","dehydration","delirium","dementia","diabetes mellitus",
+  "fractured hip","hepatic encephalopathy","hyperkalemia","hypertension",
+  "liver cirrhosis","meningitis","myocardial infarction","pancreatitis",
+  "pneumonia","post-op care","pulmonary embolism","renal calculi",
+  "schizophrenia","sepsis","sickle cell anemia","stroke","UTI",
+].sort();
+
+const orientationOptions = [
+  "Alert and oriented x1","Alert and oriented x2","Alert and oriented x3",
+  "Periods of confusion","Confused","Disoriented","Lethargic",
+];
+
+const breathingOptions = [
+  "Breathing comfortably on room air",
+  "On nasal cannula 2L","On nasal cannula 4L","On nasal cannula 6L",
+  "On non-rebreather mask 10L","On non-rebreather mask 15L",
+  "On high-flow nasal cannula","On ventilator","Using accessory muscles",
+];
+
+const ventilatorModes = ["AC/VC","AC/PC","SIMV","PS/CPAP"];
+const painOptions = Array.from({ length: 11 }, (_, i) => `${i}/10`);
+const adlOptions = ["Independent of ADLs","Needs assistance with ADLs","Dependent for ADLs"];
+const assistLevels = ["1 person assist","2 person assist"];
+const medOptions = ["All medications given per MD order","Held meds per protocol","Refused medications"];
+const genderOptions = ["male","female"];
+const shileySizes = ["4.0","6.0","8.0","10.0"];
+const catheterTypes = ["None","Foley catheter","Suprapubic catheter","Condom catheter","Nephrostomy tube"];
+const spo2Options = ["90%","91%","92%","93%","94%","95%","96%","97%","98%","99%","100%"];
+
+/* ============================================================================
+   2) Helpers (was src/lib/numbers.ts) + LocalStorage hook (was src/hooks/useLocalStorage.ts)
+============================================================================ */
+const cleanNum = (v: unknown) => String(v ?? "").replace(/[^\d]/g, "");
+
+const useLocalStorage = <T,>(key: string, initial: T) => {
+  const [state, setState] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : initial;
+    } catch { return initial; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch {}
+  }, [key, state]);
+  return [state, setState] as const;
+};
+
+/* ============================================================================
+   3) Validation (was src/lib/validation.ts)
+============================================================================ */
+const validateAge = (n: unknown) => {
+  const x = Number(n);
+  return Number.isFinite(x) && x >= 1 && x <= 129;
+};
+const needsSpO2 = (breathing: string) =>
+  breathing !== "Breathing comfortably on room air";
+const needsVentSettings = (
+  breathing: string,
+  s: { mode?: string; rate?: string; vt?: string; peep?: string; fio2?: string }
+) => {
+  if (breathing !== "On ventilator") return false;
+  const any = s.mode || s.rate || s.vt || s.peep || s.fio2;
+  return !any; // true => error if all are empty
+};
+
+/* ============================================================================
+   4) Note builder (was src/lib/noteBuilder.ts)
+============================================================================ */
+const buildNote = (state: any) => {
+  const {
+    age, gender, diagnosis, customDiagnosis, orientation,
+    breathing, spo2, pain, painLocation, painIntervention,
+    adl, assist, meds, refusedMeds,
+    hasTrach, shileySize, hasFistula, fistulaLocation,
+    catheter, glucoseChecked, hasWound, precautions,
+    ventMode, ventRate, ventVT, ventPEEP, ventFiO2,
+  } = state;
+
+  const finalDx = (customDiagnosis?.trim() || diagnosis);
+  let note = `The patient, a ${age}-year-old ${gender}, was admitted for ${finalDx}.`;
+
+  // Orientation
+  if (orientation === "Alert and oriented x3") note += " Patient is alert, oriented to person, place, and time.";
+  else if (orientation === "Periods of confusion") note += " Patient exhibits periods of confusion, requiring redirection.";
+  else note += ` ${orientation}.`;
+
+  // Breathing
+  if (breathing === "Breathing comfortably on room air") {
+    note += ` Breathing comfortably on room air with oxygen saturation maintained at ${spo2}.`;
+  } else if (breathing === "On ventilator") {
+    note += ` Patient is mechanically ventilated in ${ventMode} mode with settings as follows:`;
+    const parts: string[] = [];
+    if (ventRate) parts.push(`RR ${cleanNum(ventRate)}`);
+    if (ventVT) parts.push(`VT ${cleanNum(ventVT)} mL`);
+    if (ventPEEP) parts.push(`PEEP ${cleanNum(ventPEEP)} cmH₂O`);
+    if (ventFiO2) parts.push(`FiO₂ ${cleanNum(ventFiO2)}%`);
+    if (parts.length) note += " " + parts.join(", ") + ".";
+  } else {
+    note += ` On ${breathing.toLowerCase()} with SpO₂ stable at ${spo2}.`;
+  }
+
+  // Pain
+  if (pain === "0/10") note += " Denies pain at this time.";
+  else {
+    note += ` Reports pain level of ${pain}`;
+    if (painLocation) note += `, localized to ${painLocation}`;
+    if (painIntervention) note += `. Intervention provided (${painIntervention}) with noted improvement`;
+    note += ".";
+  }
+
+  // ADLs
+  if (adl === "Independent of ADLs") note += " Patient is independent in all activities of daily living.";
+  else if (adl === "Needs assistance with ADLs") note += ` Requires assistance with ADLs, typically ${assist}.`;
+  else note += " Dependent for all activities of daily living.";
+
+  // Meds
+  if (meds === "All medications given per MD order") note += " All medications administered per provider orders.";
+  else if (meds === "Held meds per protocol") note += " Medications held per protocol.";
+  else if (meds === "Refused medications") {
+    note += " Refused medications";
+    if (refusedMeds) note += ` due to ${refusedMeds}`;
+    note += ".";
+  }
+
+  // Devices / Wounds
+  if (hasTrach) note += ` Patient has tracheostomy, size ${shileySize}, with site clean and secure.`;
+  if (hasFistula && fistulaLocation) note += ` Fistula present at ${fistulaLocation}, site intact.`;
+  if (catheter !== "None") note += ` ${catheter} in place; care performed per protocol.`;
+  if (catheter === "Foley catheter") note += " Foley care done with SureStep wipes.";
+  if (glucoseChecked) note += " Blood glucose checked.";
+  if (hasWound) note += " Wound noted, dressing changed and site assessed.";
+
+  // Precautions
+  if (precautions?.pulseOx) note += " Continuous pulse oximetry monitoring in place.";
+  if (precautions?.pcaPump) note += " PCA pump in use.";
+  Object.entries(precautions || {}).forEach(([key, value]) => {
+    if (value && !["pulseOx", "pcaPump"].includes(key)) {
+      note += ` ${key.charAt(0).toUpperCase() + key.slice(1)} precautions maintained.`;
+    }
+  });
+
+  // Closing
+  note += " Patient monitored closely with frequent rounding. Safety measures in place: call bell within reach, bed in lowest position, and fall precautions maintained. Care plan ongoing.";
+  return note;
+};
+
+/* ============================================================================
+   5) Ventilator subcomponent (was src/components/VentilatorSettings.tsx)
+============================================================================ */
+function VentilatorSettings({
+  baseId, mode, setMode, rate, setRate, vt, setVT, peep, setPEEP, fio2, setFio2
+}: {
+  baseId: string;
+  mode: string; setMode: (v: string) => void;
+  rate: string; setRate: (v: string) => void;
+  vt: string; setVT: (v: string) => void;
+  peep: string; setPEEP: (v: string) => void;
+  fio2: string; setFio2: (v: string) => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="sm:col-span-2">
+        <Label htmlFor={`${baseId}-mode`}>Ventilator Mode</Label>
+        <select
+          id={`${baseId}-mode`} value={mode} onChange={(e) => setMode(e.target.value)}
+          className="mt-1 w-full border rounded p-2"
+        >
+          {ventilatorModes.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <Label htmlFor={`${baseId}-rate`}>Rate (RR, breaths/min)</Label>
+        <Input
+          id={`${baseId}-rate`} inputMode="numeric" placeholder="e.g., 14"
+          value={rate} onChange={(e) => setRate(cleanNum(e.target.value))}
+        />
+      </div>
+
+      <div>
+        <Label htmlFor={`${baseId}-vt`}>Tidal Volume (mL)</Label>
+        <Input
+          id={`${baseId}-vt`} inputMode="numeric" placeholder="e.g., 450"
+          value={vt} onChange={(e) => setVT(cleanNum(e.target.value))}
+        />
+      </div>
+
+      <div>
+        <Label htmlFor={`${baseId}-peep`}>PEEP (cmH₂O)</Label>
+        <Input
+          id={`${baseId}-peep`} inputMode="numeric" placeholder="e.g., 5"
+          value={peep} onChange={(e) => setPEEP(cleanNum(e.target.value))}
+        />
+      </div>
+
+      <div>
+        <Label htmlFor={`${baseId}-fio2`}>FiO₂ (%)</Label>
+        <Input
+          id={`${baseId}-fio2`} inputMode="numeric" placeholder="e.g., 40"
+          value={fio2} onChange={(e) => setFio2(cleanNum(e.target.value))}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+   6) Main app (was src/App.tsx)
+============================================================================ */
+export default function NursingNoteGenerator() {
+  // Persisted state bucket
+  const [persist, setPersist] = useLocalStorage("nng_state_v1", {
+    age: 70,
+    gender: "male",
+    diagnosis: "pneumonia",
+    customDiagnosis: "",
+    orientation: "Alert and oriented x3",
+    breathing: "Breathing comfortably on room air",
+    spo2: "100%",
+    pain: "0/10",
+    painLocation: "",
+    painIntervention: "",
+    adl: "Independent of ADLs",
+    assist: "1 person assist",
+    meds: "All medications given per MD order",
+    refusedMeds: "",
+    hasTrach: false,
+    shileySize: "6.0",
+    hasFistula: false,
+    fistulaLocation: "",
+    catheter: "None",
+    glucoseChecked: false,
+    hasWound: false,
+    precautions: {
+      pulseOx: false, pcaPump: false, airborne: false, enteric: false,
+      neutropenic: false, radiation: false, contact: false, droplet: false,
+    },
+    // Vent settings
+    ventMode: "AC/VC",
+    ventRate: "",
+    ventVT: "",
+    ventPEEP: "",
+    ventFiO2: "",
+  });
+
+  const {
+    age, gender, diagnosis, customDiagnosis, orientation, breathing, spo2,
+    pain, painLocation, painIntervention, adl, assist, meds, refusedMeds,
+    hasTrach, shileySize, hasFistula, fistulaLocation, catheter,
+    glucoseChecked, hasWound, precautions,
+    ventMode, ventRate, ventVT, ventPEEP, ventFiO2
+  } = persist;
+
+  const [notes, setNotes] = useState("");
+  const [errors, setErrors] = useState<string[]>([]);
+
+  const update = (patch: Partial<typeof persist>) => setPersist(prev => ({ ...prev, ...patch }));
+  const updatePrecautions = (key: keyof typeof persist.precautions) =>
+    update({ precautions: { ...persist.precautions, [key]: !persist.precautions[key] } });
+
+  // Validation flow
+  const buildValidationErrors = (state: typeof persist): string[] => {
+    const errs: string[] = [];
+    if (!validateAge(state.age)) errs.push("Enter a realistic age (1–129).");
+    if (!state.diagnosis && !state.customDiagnosis.trim()) errs.push("Select a diagnosis or type a custom diagnosis.");
+    if (needsSpO2(state.breathing) && !state.spo2) errs.push("Select an SpO₂ value.");
+    if (needsVentSettings(state.breathing, {
+      mode: state.ventMode, rate: state.ventRate, vt: state.ventVT, peep: state.ventPEEP, fio2: state.ventFiO2
+    })) errs.push("Add at least one ventilator setting (mode, RR, VT, PEEP, or FiO₂).");
+    return errs;
+  };
+
+  // Note (pure -> memoized)
+  const generatedNote = useMemo(() => buildNote(persist), [persist]);
+  useEffect(() => setNotes(generatedNote), [generatedNote]);
+
+  // Actions
+  const handleGenerate = () => {
+    const errs = buildValidationErrors(persist);
+    setErrors(errs);
+    if (errs.length === 0) setNotes(generatedNote);
+  };
+
+  const copyToClipboard = async () => {
+    try { await navigator.clipboard.writeText(notes || ""); alert("Note copied to clipboard."); }
+    catch { alert("Copy failed. You can still select and copy manually."); }
+  };
+
+  const exportTxt = () => {
+    try {
+      const blob = new Blob([notes || ""], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `nursing-note-${Date.now()}.txt`; a.click();
+      URL.revokeObjectURL(url);
+    } catch {}
+  };
+
+  const printNote = () => {
+    const w = window.open("", "_blank");
+    if (!w) return window.print();
+    w.document.write(`<pre style="font-family: ui-monospace, Menlo, Consolas, 'Courier New', monospace; white-space: pre-wrap; line-height:1.4;">${(notes || "").replace(/</g, "&lt;")}</pre>`);
+    w.document.close(); w.focus(); w.print(); w.close();
+  };
+
+  const resetAll = () => {
+    localStorage.removeItem("nng_state_v1");
+    setPersist({
+      ...persist,
+      ...{
+        age: 70, gender: "male", diagnosis: "pneumonia", customDiagnosis: "",
+        orientation: "Alert and oriented x3", breathing: "Breathing comfortably on room air",
+        spo2: "100%", pain: "0/10", painLocation: "", painIntervention: "",
+        adl: "Independent of ADLs", assist: "1 person assist",
+        meds: "All medications given per MD order", refusedMeds: "",
+        hasTrach: false, shileySize: "6.0", hasFistula: false, fistulaLocation: "",
+        catheter: "None", glucoseChecked: false, hasWound: false,
+        precautions: { pulseOx: false, pcaPump: false, airborne: false, enteric: false, neutropenic: false, radiation: false, contact: false, droplet: false },
+        ventMode: "AC/VC", ventRate: "", ventVT: "", ventPEEP: "", ventFiO2: "",
+      }
+    });
+    setNotes(""); setErrors([]);
+  };
+
+  // UI
+  return (
+    <div className="max-w-2xl mx-auto p-4 space-y-4">
+      <Card>
+        <CardContent className="space-y-4 pt-4">
+          {errors.length > 0 && (
+            <div className="border border-red-300 bg-red-50 text-red-800 rounded p-3 text-sm">
+              <ul className="list-disc ml-5">{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
+            </div>
+          )}
+
+          {/* Demographics */}
+          <Label htmlFor="age">Age</Label>
+          <Input id="age" type="number" min={0} value={age}
+                 onChange={(e) => update({ age: Number(e.target.value || 0) })} />
+
+          <Label htmlFor="gender">Gender</Label>
+          <select id="gender" value={gender} onChange={(e) => update({ gender: e.target.value as any })}
+                  className="w-full border rounded p-2">
+            {genderOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+
+          {/* Diagnosis */}
+          <Label htmlFor="diagnosis">Diagnosis</Label>
+          <select id="diagnosis" value={diagnosis} onChange={(e) => update({ diagnosis: e.target.value })}
+                  className="w-full border rounded p-2">
+            {commonDiagnoses.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <Input id="custom-dx" placeholder="Custom diagnosis (optional)" value={customDiagnosis}
+                 onChange={(e) => update({ customDiagnosis: e.target.value })} />
+
+          {/* Neuro */}
+          <Label htmlFor="orientation">Orientation</Label>
+          <select id="orientation" value={orientation} onChange={(e) => update({ orientation: e.target.value })}
+                  className="w-full border rounded p-2">
+            {orientationOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+
+          {/* Breathing / SpO2 */}
+          <Label htmlFor="breathing">Breathing</Label>
+          <select id="breathing" value={breathing} onChange={(e) => update({ breathing: e.target.value })}
+                  className="w-full border rounded p-2">
+            {breathingOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+
+          {breathing !== "Breathing comfortably on room air" && (
+            <>
+              <Label htmlFor="spo2">SpO₂</Label>
+              <select id="spo2" value={spo2} onChange={(e) => update({ spo2: e.target.value })}
+                      className="w-full border rounded p-2">
+                {spo2Options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+            </>
+          )}
+
+          {/* Ventilator (conditional) */}
+          {breathing === "On ventilator" && (
+            <VentilatorSettings
+              baseId="vent"
+              mode={ventMode} setMode={(v) => update({ ventMode: v })}
+              rate={ventRate} setRate={(v) => update({ ventRate: v })}
+              vt={ventVT} setVT={(v) => update({ ventVT: v })}
+              peep={ventPEEP} setPEEP={(v) => update({ ventPEEP: v })}
+              fio2={ventFiO2} setFio2={(v) => update({ ventFiO2: v })}
+            />
+          )}
+
+          {/* Pain */}
+          <Label htmlFor="pain">Pain Level</Label>
+          <select id="pain" value={pain} onChange={(e) => update({ pain: e.target.value })}
+                  className="w-full border rounded p-2">
+            {painOptions.map(level => <option key={level} value={level}>{level}</option>)}
+          </select>
+
+          {pain !== "0/10" && (
+            <>
+              <Label htmlFor="pain-location">Describe Pain Location & Type</Label>
+              <Input id="pain-location" value={painLocation} onChange={(e) => update({ painLocation: e.target.value })}
+                     placeholder="e.g., sharp pain in lower back" />
+              <Label htmlFor="pain-intervention">Intervention & Response</Label>
+              <Input id="pain-intervention" value={painIntervention} onChange={(e) => update({ painIntervention: e.target.value })}
+                     placeholder="e.g., repositioned, pain reduced to 2/10" />
+            </>
+          )}
+
+          {/* ADLs */}
+          <Label htmlFor="adl">ADL Status</Label>
+          <select id="adl" value={adl} onChange={(e) => update({ adl: e.target.value })}
+                  className="w-full border rounded p-2">
+            {adlOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+          {adl === "Needs assistance with ADLs" && (
+            <select id="assist" value={assist} onChange={(e) => update({ assist: e.target.value })}
+                    className="w-full border rounded p-2">
+              {assistLevels.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+            </select>
+          )}
+
+          {/* Meds */}
+          <Label htmlFor="meds">Medication Info</Label>
+          <select id="meds" value={meds} onChange={(e) => update({ meds: e.target.value })}
+                  className="w-full border rounded p-2">
+            {medOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+          {meds === "Refused medications" && (
+            <>
+              <Label htmlFor="refused">Which Medications & Why</Label>
+              <Input id="refused" value={refusedMeds} onChange={(e) => update({ refusedMeds: e.target.value })}
+                     placeholder="e.g., Norco refused due to nausea" />
+            </>
+          )}
+
+          {/* Trach / Fistula / Catheters */}
+          <Label htmlFor="trach">Trach</Label>
+          <label htmlFor="trach" className="flex items-center gap-2">
+            <input id="trach" type="checkbox" checked={hasTrach} onChange={() => update({ hasTrach: !hasTrach })} /> Patient has trach
+          </label>
+          {hasTrach && (
+            <select id="shiley" value={shileySize} onChange={(e) => update({ shileySize: e.target.value })}
+                    className="w-full border rounded p-2">
+              {shileySizes.map(size => <option key={size} value={size}>{`Shiley size ${size}`}</option>)}
+            </select>
+          )}
+
+          <Label htmlFor="fistula-check">Fistula</Label>
+          <label htmlFor="fistula-check" className="flex items-center gap-2">
+            <input id="fistula-check" type="checkbox" checked={hasFistula} onChange={() => update({ hasFistula: !hasFistula })} /> Fistula present
+          </label>
+          {hasFistula && (
+            <Input id="fistula-loc" value={fistulaLocation} onChange={(e) => update({ fistulaLocation: e.target.value })}
+                   placeholder="Location (e.g., left forearm)" />
+          )}
+
+          <Label htmlFor="catheter">Catheter Type</Label>
+          <select id="catheter" value={catheter} onChange={(e) => update({ catheter: e.target.value })}
+                  className="w-full border rounded p-2">
+            {catheterTypes.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          {/* Vitals/Wounds */}
+          <Label>Vitals / Wounds</Label>
+          <label htmlFor="bg" className="flex items-center gap-2">
+            <input id="bg" type="checkbox" checked={glucoseChecked} onChange={() => update({ glucoseChecked: !glucoseChecked })} /> Blood glucose checked
+          </label>
+          <label htmlFor="wounds" className="flex items-center gap-2">
+            <input id="wounds" type="checkbox" checked={hasWound} onChange={() => update({ hasWound: !hasWound })} /> Wounds present
+          </label>
+
+          {/* Precautions */}
+          <Label>Additional Precautions / Devices</Label>
+          <div className="flex flex-col space-y-2">
+            {Object.keys(precautions).map((key) => (
+              <label key={key} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={Boolean((precautions as any)[key])}
+                  onChange={() => updatePrecautions(key as keyof typeof precautions)}
+                />
+                {key.charAt(0).toUpperCase() + key.slice(1)}
+              </label>
+            ))}
+          </div>
+
+          {/* Actions */}
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleGenerate}>Generate Nursing Note</Button>
+            <Button variant="secondary" onClick={copyToClipboard}>Copy note</Button>
+            <Button variant="secondary" onClick={exportTxt}>Export .txt</Button>
+            <Button variant="secondary" onClick={printNote}>Print</Button>
+            <Button variant="destructive" onClick={resetAll}>Reset</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Output */}
+      <Card>
+        <CardContent className="pt-4">
+          <Label htmlFor="note">Generated Note (editable)</Label>
+          <Textarea id="note" rows={8} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
